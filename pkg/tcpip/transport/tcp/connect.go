@@ -218,7 +218,13 @@ func (h *handshake) synSentState(s *segment) *tcpip.Error {
 	// acceptable if the ack field acknowledges the SYN.
 	if s.flagIsSet(header.TCPFlagRst) {
 		if s.flagIsSet(header.TCPFlagAck) && s.ackNumber == h.iss+1 {
-			return tcpip.ErrConnectionRefused
+			// RFC 793, page 67, states that a RST with proper ACK causes
+			// a transition to CLOSED state, the TCB to be deleted, and an
+			// ErrConnectionReset.
+			h.ep.mu.Lock()
+			h.ep.workerCleanup = true
+			h.ep.mu.Unlock()
+			return tcpip.ErrConnectionReset
 		}
 		return nil
 	}
@@ -1087,6 +1093,7 @@ func (e *endpoint) protocolMainLoop(handshake bool) *tcpip.Error {
 			e.lastErrorMu.Unlock()
 
 			e.mu.Lock()
+			// TODO(rheacock): is this actually wrong?
 			e.stack.Stats().TCP.EstablishedResets.Increment()
 			e.stack.Stats().TCP.CurrentEstablished.Decrement()
 			e.state = StateError
