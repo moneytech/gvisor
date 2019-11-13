@@ -1309,6 +1309,21 @@ func getSockOptIP(t *kernel.Task, ep commonEndpoint, name, outLen int, family in
 		}
 		return int32(v), nil
 
+	case linux.IP_RECVTOS:
+		if outLen < sizeOfInt32 {
+			return nil, syserr.ErrInvalidArgument
+		}
+
+		var v tcpip.ReceiveTOSOption
+		if err := ep.GetSockOpt(&v); err != nil {
+			return nil, syserr.TranslateNetstackError(err)
+		}
+
+		if v {
+			return int32(1), nil
+		}
+		return int32(0), nil
+
 	default:
 		emitUnimplementedEventIP(t, name)
 	}
@@ -1783,6 +1798,16 @@ func setSockOptIP(t *kernel.Task, ep commonEndpoint, name int, optVal []byte) *s
 		}
 		return syserr.TranslateNetstackError(ep.SetSockOpt(tcpip.IPv4TOSOption(v)))
 
+	case linux.IP_RECVTOS:
+		v, err := parseIntOrChar(optVal)
+		if err != nil {
+			return err
+		}
+
+		return syserr.TranslateNetstackError(ep.SetSockOpt(
+			tcpip.ReceiveTOSOption(v != 0),
+		))
+
 	case linux.IP_ADD_SOURCE_MEMBERSHIP,
 		linux.IP_BIND_ADDRESS_NO_PORT,
 		linux.IP_BLOCK_SOURCE,
@@ -1803,7 +1828,6 @@ func setSockOptIP(t *kernel.Task, ep commonEndpoint, name int, optVal []byte) *s
 		linux.IP_RECVFRAGSIZE,
 		linux.IP_RECVOPTS,
 		linux.IP_RECVORIGDSTADDR,
-		linux.IP_RECVTOS,
 		linux.IP_RECVTTL,
 		linux.IP_RETOPTS,
 		linux.IP_TRANSPARENT,

@@ -314,6 +314,17 @@ func PackTimestamp(t *kernel.Task, timestamp int64, buf []byte) []byte {
 	)
 }
 
+// PackTos packs an IP_RECVTOS socket control message.
+func PackTos(t *kernel.Task, tos uint8, buf []byte) []byte {
+	return putCmsgStruct(
+		buf,
+		linux.SOL_IP,
+		linux.IP_TOS,
+		1,
+		tos,
+	)
+}
+
 // PackInq packs a TCP_INQ socket control message.
 func PackInq(t *kernel.Task, inq int32, buf []byte) []byte {
 	return putCmsgStruct(

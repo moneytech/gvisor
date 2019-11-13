@@ -31,6 +31,7 @@ type udpPacket struct {
 	senderAddress tcpip.FullAddress
 	data          buffer.VectorisedView `state:".(buffer.VectorisedView)"`
 	timestamp     int64
+	tos           uint8
 }
 
 // EndpointState represents the state of a UDP endpoint.
@@ -107,6 +108,10 @@ type endpoint struct {
 	// sendTOS represents IPv4 TOS or IPv6 TrafficClass,
 	// applied while sending packets. Defaults to 0 as on Linux.
 	sendTOS uint8
+
+	// receiveTOS determines if the incoming IPv4 TOS header field is passed
+	// as ancillary data to ControlMessages on Read.
+	receiveTOS bool
 
 	// shutdownFlags represent the current shutdown state of the endpoint.
 	shutdownFlags tcpip.ShutdownFlags
@@ -236,7 +241,7 @@ func (e *endpoint) Read(addr *tcpip.FullAddress) (buffer.View, tcpip.ControlMess
 		*addr = p.senderAddress
 	}
 
-	return p.data.ToView(), tcpip.ControlMessages{HasTimestamp: true, Timestamp: p.timestamp}, nil
+	return p.data.ToView(), tcpip.ControlMessages{HasTimestamp: true, Timestamp: p.timestamp, HasTOS: e.receiveTOS, TOS: p.tos}, nil
 }
 
 // prepareForWrite prepares the endpoint for sending data. In particular, it
@@ -648,6 +653,12 @@ func (e *endpoint) SetSockOpt(opt interface{}) *tcpip.Error {
 		e.sendTOS = uint8(v)
 		e.mu.Unlock()
 		return nil
+
+	case tcpip.ReceiveTOSOption:
+		e.mu.Lock()
+		e.receiveTOS = bool(v)
+		e.mu.Unlock()
+		return nil
 	}
 	return nil
 }
@@ -781,6 +792,12 @@ func (e *endpoint) GetSockOpt(opt interface{}) *tcpip.Error {
 	case *tcpip.IPv6TrafficClassOption:
 		e.mu.RLock()
 		*o = tcpip.IPv6TrafficClassOption(e.sendTOS)
+		e.mu.RUnlock()
+		return nil
+
+	case *tcpip.ReceiveTOSOption:
+		e.mu.RLock()
+		*o = tcpip.ReceiveTOSOption(e.receiveTOS)
 		e.mu.RUnlock()
 		return nil
 
@@ -1209,12 +1226,27 @@ func (e *endpoint) HandlePacket(r *stack.Route, id stack.TransportEndpointID, pk
 
 	packet.timestamp = e.stack.NowNanoseconds()
 
+	packet.tos = parseNetworkHeaderTos(r.NetProto, pkt.NetworkHeader)
+
 	e.rcvMu.Unlock()
 
 	// Notify any waiters that there's data to be read now.
 	if wasEmpty {
 		e.waiterQueue.Notify(waiter.EventIn)
 	}
+}
+
+// parseNetworkHeaderTos attempts to get the incoming TOS from a provided
+// buffer.View of a Network Header.
+func parseNetworkHeaderTos(proto tcpip.NetworkProtocolNumber, headerView buffer.View) uint8 {
+	if headerView != nil && proto == header.IPv4ProtocolNumber {
+		h := header.IPv4(headerView)
+		// This packet has already been validated before being passed up the stack.
+		tos, _ := h.TOS()
+		return tos
+	}
+	// IPV6 will be implemented when we implement the IPV6_RECVTCLASS
+	return stack.DefaultTOS
 }
 
 // HandleControlPacket implements stack.TransportEndpoint.HandleControlPacket.

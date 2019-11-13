@@ -312,6 +312,13 @@ type ControlMessages struct {
 	// the read data was received.
 	Timestamp int64
 
+	// HasTos indicates whether received TOS is valid/set.
+	HasTOS bool
+
+	// TOS is the received IP header field Type-of-Service for the last packet
+	// received.
+	TOS uint8
+
 	// HasInq indicates whether Inq is valid/set.
 	HasInq bool
 
@@ -648,6 +655,10 @@ type IPv4TOSOption uint8
 // IPv6TrafficClassOption is used by SetSockOpt/GetSockOpt to specify TOS
 // for all subsequent outgoing IPv6 packets from the endpoint.
 type IPv6TrafficClassOption uint8
+
+// ReceiveTOSOption is used by SetSockOpt/GetSockOpt to specify if the TOS
+// ancillary message is passed with incoming packets.
+type ReceiveTOSOption bool
 
 // Route is a row in the routing table. It specifies through which NIC (and
 // gateway) sets of packets should be routed. A row is considered viable if the
