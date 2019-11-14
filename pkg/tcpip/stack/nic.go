@@ -173,33 +173,46 @@ func (n *NIC) enable() *tcpip.Error {
 		return err
 	}
 
-	if !n.stack.autoGenIPv6LinkLocal {
-		return nil
-	}
-
-	l2addr := n.linkEP.LinkAddress()
-
 	// Only attempt to generate the link-local address if we have a
-	// valid MAC address.
+	// valid MAC address and we are configured to.
 	//
 	// TODO(b/141011931): Validate a LinkEndpoint's link address
 	// (provided by LinkEndpoint.LinkAddress) before reaching this
 	// point.
-	if !header.IsValidUnicastEthernetAddress(l2addr) {
-		return nil
+	l2addr := n.linkEP.LinkAddress()
+	if n.stack.autoGenIPv6LinkLocal && header.IsValidUnicastEthernetAddress(l2addr) {
+		if _, err := n.addPermanentAddressLocked(tcpip.ProtocolAddress{
+			Protocol: header.IPv6ProtocolNumber,
+			AddressWithPrefix: tcpip.AddressWithPrefix{
+				Address:   header.LinkLocalAddr(l2addr),
+				PrefixLen: header.IPv6LinkLocalPrefix.PrefixLen,
+			},
+		}, CanBePrimaryEndpoint); err != nil {
+			return err
+		}
 	}
 
-	addr := header.LinkLocalAddr(l2addr)
+	// If we are operating as a router, then do not solicit routers
+	// since we won't process the RAs anyways.
+	if !n.stack.forwarding {
+		n.ndp.startSolicitingRouters()
+	}
 
-	_, err := n.addPermanentAddressLocked(tcpip.ProtocolAddress{
-		Protocol: header.IPv6ProtocolNumber,
-		AddressWithPrefix: tcpip.AddressWithPrefix{
-			Address:   addr,
-			PrefixLen: header.IPv6LinkLocalPrefix.PrefixLen,
-		},
-	}, CanBePrimaryEndpoint)
+	return nil
+}
 
-	return err
+func (n *NIC) startSolicitingIPv6Routers() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	n.ndp.startSolicitingRouters()
+}
+
+func (n *NIC) stopSolicitingIPv6Routers() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	n.ndp.stopSolicitingRouters()
 }
 
 // attachLinkEndpoint attaches the NIC to the endpoint, which will enable it
@@ -446,6 +459,7 @@ func (n *NIC) addAddressLocked(protocolAddress tcpip.ProtocolAddress, peb Primar
 
 	// If we are adding a tentative IPv6 address, start DAD.
 	if isIPv6Unicast && kind == permanentTentative {
+		ref.incRef()
 		if err := n.ndp.startDuplicateAddressDetection(protocolAddress.AddressWithPrefix.Address, ref); err != nil {
 			return nil, err
 		}

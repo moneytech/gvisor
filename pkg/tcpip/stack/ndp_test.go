@@ -1537,3 +1537,187 @@ func TestPrefixDiscoveryMaxOnLinkPrefixes(t *testing.T) {
 		t.Fatalf("got GetRouteTable = %v, want = %v", got, expectedRt)
 	}
 }
+
+// TestRouterSolicitation tests the initial Router Solicitations that are sent
+// when a NIC newly becomes enabled.
+func TestRouterSolicitation(t *testing.T) {
+	tests := []struct {
+		maxRtrSolicit          uint8
+		rtrSolicitInt          time.Duration
+		effectiveRtrSolicitInt time.Duration
+		maxRtrSolicitDelay     time.Duration
+	}{
+		{
+			1,
+			time.Second,
+			time.Second,
+			time.Second,
+		},
+		{
+			2,
+			time.Second,
+			time.Second,
+			500 * time.Millisecond,
+		},
+		{
+			1,
+			time.Second,
+			time.Second,
+			0,
+		},
+		{
+			2,
+			0,
+			4 * time.Second,
+			0,
+		},
+		{
+			3,
+			500 * time.Millisecond,
+			500 * time.Millisecond,
+			0,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(fmt.Sprintf("%d/%s/%s/%s", test.maxRtrSolicit, test.rtrSolicitInt, test.effectiveRtrSolicitInt, test.maxRtrSolicitDelay), func(t *testing.T) {
+			t.Parallel()
+			e := channel.New(10, 1280, linkAddr1)
+			waitForPkt := func(timeout time.Duration) {
+				t.Helper()
+				select {
+				case p := <-e.C:
+					if p.Proto != header.IPv6ProtocolNumber {
+						t.Fatalf("got Proto = %d, want = %d", p.Proto, header.IPv6ProtocolNumber)
+					}
+					checker.IPv6(t, p.Pkt.Header.View(),
+						checker.SrcAddr(header.IPv6Any),
+						checker.DstAddr(header.IPv6AllRoutersMulticastAddress),
+						checker.TTL(header.NDPHopLimit),
+						checker.NDPRS())
+
+				case <-time.After(timeout):
+					t.Fatal("timed out waiting for packet")
+				}
+			}
+			waitForNothing := func(timeout time.Duration) {
+				t.Helper()
+				select {
+				case <-e.C:
+					t.Fatal("unexpectedly got a packet")
+				case <-time.After(timeout):
+				}
+			}
+			s := stack.New(stack.Options{
+				NetworkProtocols: []stack.NetworkProtocol{ipv6.NewProtocol()},
+				NDPConfigs: stack.NDPConfigurations{
+					MaxRtrSolicitations:     test.maxRtrSolicit,
+					RtrSolicitationInterval: test.rtrSolicitInt,
+					MaxRtrSolicitationDelay: test.maxRtrSolicitDelay,
+				},
+			})
+			if err := s.CreateNIC(1, e); err != nil {
+				t.Fatalf("CreateNIC(1) = %s", err)
+			}
+
+			// Make sure each RS got sent at the right times.
+			remaining := test.maxRtrSolicit
+			if remaining > 0 {
+				waitForPkt(test.maxRtrSolicitDelay + defaultTimeout)
+				remaining--
+			}
+			for ; remaining > 0; remaining-- {
+				waitForNothing(test.effectiveRtrSolicitInt - defaultTimeout)
+				waitForPkt(2 * defaultTimeout)
+			}
+
+			// Make sure no more RS.
+			if test.effectiveRtrSolicitInt > test.maxRtrSolicitDelay {
+				waitForNothing(test.effectiveRtrSolicitInt + defaultTimeout)
+			} else {
+				waitForNothing(test.maxRtrSolicitDelay + defaultTimeout)
+			}
+
+			// Make sure the counter got properly incremented.
+			if got, want := s.Stats().ICMP.V6PacketsSent.RouterSolicit.Value(), uint64(test.maxRtrSolicit); got != want {
+				t.Fatalf("got sent RouterSolicit = %d, want = %d", got, want)
+			}
+		})
+	}
+}
+
+// TestStopStartSolicitingRouters tests that when forwarding is enabled or
+// disabled, router solicitations are stopped or started, respecitively.
+func TestStopStartSolicitingRouters(t *testing.T) {
+	const interval = 500 * time.Millisecond
+	const delay = time.Second
+	e := channel.New(10, 1280, linkAddr1)
+	waitForPkt := func(timeout time.Duration) {
+		t.Helper()
+		select {
+		case p := <-e.C:
+			if p.Proto != header.IPv6ProtocolNumber {
+				t.Fatalf("got Proto = %d, want = %d", p.Proto, header.IPv6ProtocolNumber)
+			}
+			checker.IPv6(t, p.Pkt.Header.View(),
+				checker.SrcAddr(header.IPv6Any),
+				checker.DstAddr(header.IPv6AllRoutersMulticastAddress),
+				checker.TTL(header.NDPHopLimit),
+				checker.NDPRS())
+
+		case <-time.After(timeout):
+			t.Fatal("timed out waiting for packet")
+		}
+	}
+	s := stack.New(stack.Options{
+		NetworkProtocols: []stack.NetworkProtocol{ipv6.NewProtocol()},
+		NDPConfigs: stack.NDPConfigurations{
+			MaxRtrSolicitations:     3,
+			RtrSolicitationInterval: interval,
+			MaxRtrSolicitationDelay: delay,
+		},
+	})
+	if err := s.CreateNIC(1, e); err != nil {
+		t.Fatalf("CreateNIC(1) = %s", err)
+	}
+
+	// Enable forwarding which should stop router solicitations.
+	s.SetForwarding(true)
+	select {
+	case <-e.C:
+		// A single RS may have been sent before forwarding was enabled.
+		select {
+		case <-e.C:
+			t.Fatal("Should not have sent more than one RS message")
+		case <-time.After(interval + defaultTimeout):
+		}
+	case <-time.After(delay + defaultTimeout):
+	}
+
+	// Enabling forwarding again should do nothing.
+	s.SetForwarding(true)
+	select {
+	case <-e.C:
+		t.Fatal("unexpectedly got a packet")
+	case <-time.After(time.Second):
+	}
+
+	// Disable forwarding which should start router solicitations.
+	s.SetForwarding(false)
+	waitForPkt(delay + defaultTimeout)
+	waitForPkt(interval + defaultTimeout)
+	waitForPkt(interval + defaultTimeout)
+	select {
+	case <-e.C:
+		t.Fatal("unexpectedly got a packet")
+	case <-time.After(time.Second):
+	}
+
+	// Disabling forwarding again should do nothing.
+	s.SetForwarding(false)
+	select {
+	case <-e.C:
+		t.Fatal("unexpectedly got a packet")
+	case <-time.After(time.Second):
+	}
+}
