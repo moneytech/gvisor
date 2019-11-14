@@ -664,6 +664,8 @@ TEST_P(UdpSocketTest, SendToAddressOtherThanConnected) {
 }
 
 TEST_P(UdpSocketTest, ZerolengthWriteAllowed) {
+  // TODO(gvisor.dev/issue/1202): Hostinet does not support zero length writes.
+  SKIP_IF(IsRunningWithHostinet());
   // Bind s_ to loopback:TestPort, and connect to loopback:TestPort+1.
   ASSERT_THAT(bind(s_, addr_[0], addrlen_), SyscallSucceeds());
   ASSERT_THAT(connect(s_, addr_[1], addrlen_), SyscallSucceeds());
@@ -681,6 +683,8 @@ TEST_P(UdpSocketTest, ZerolengthWriteAllowed) {
 }
 
 TEST_P(UdpSocketTest, ZerolengthWriteAllowedNonBlockRead) {
+  // TODO(gvisor.dev/issue/1202): Hostinet does not support zero length writes.
+  SKIP_IF(IsRunningWithHostinet());
   // Bind s_ to loopback:TestPort, and connect to loopback:TestPort+1.
   ASSERT_THAT(bind(s_, addr_[0], addrlen_), SyscallSucceeds());
   ASSERT_THAT(connect(s_, addr_[1], addrlen_), SyscallSucceeds());
@@ -886,6 +890,9 @@ TEST_P(UdpSocketTest, ReadShutdownSameSocketResetsShutdownState) {
 }
 
 TEST_P(UdpSocketTest, ReadShutdown) {
+  // TODO(gvisor.dev/issue/1202): Calling recv() after shutdown without
+  // MSG_DONTWAIT blocks indefinitely.
+  SKIP_IF(IsRunningWithHostinet());
   char received[512];
   EXPECT_THAT(recv(s_, received, sizeof(received), MSG_DONTWAIT),
               SyscallFailsWithErrno(EWOULDBLOCK));
@@ -908,6 +915,9 @@ TEST_P(UdpSocketTest, ReadShutdown) {
 }
 
 TEST_P(UdpSocketTest, ReadShutdownDifferentThread) {
+  // TODO(gvisor.dev/issue/1202): Calling recv() after shutdown without
+  // MSG_DONTWAIT blocks indefinitely.
+  SKIP_IF(IsRunningWithHostinet());
   char received[512];
   EXPECT_THAT(recv(s_, received, sizeof(received), MSG_DONTWAIT),
               SyscallFailsWithErrno(EWOULDBLOCK));
@@ -1213,6 +1223,9 @@ TEST_P(UdpSocketTest, ErrorQueue) {
 }
 
 TEST_P(UdpSocketTest, SoTimestampOffByDefault) {
+  // TODO(gvisor.dev/issue/1202): SO_TIMESTAMP socket option not supported by
+  // hostinet.
+  SKIP_IF(IsRunningWithHostinet());
   int v = -1;
   socklen_t optlen = sizeof(v);
   ASSERT_THAT(getsockopt(s_, SOL_SOCKET, SO_TIMESTAMP, &v, &optlen),
@@ -1222,6 +1235,9 @@ TEST_P(UdpSocketTest, SoTimestampOffByDefault) {
 }
 
 TEST_P(UdpSocketTest, SoTimestamp) {
+  // TODO(gvisor.dev/issue/1202): ioctl() and SO_TIMESTAMP socket option are not
+  // supported by hostinet.
+  SKIP_IF(IsRunningWithHostinet());
   ASSERT_THAT(bind(s_, addr_[0], addrlen_), SyscallSucceeds());
   ASSERT_THAT(connect(t_, addr_[0], addrlen_), SyscallSucceeds());
 
@@ -1265,6 +1281,8 @@ TEST_P(UdpSocketTest, WriteShutdownNotConnected) {
 }
 
 TEST_P(UdpSocketTest, TimestampIoctl) {
+  // TODO(gvisor.dev/issue/1202): ioctl() is not supported by hostinet.
+  SKIP_IF(IsRunningWithHostinet());
   ASSERT_THAT(bind(s_, addr_[0], addrlen_), SyscallSucceeds());
   ASSERT_THAT(connect(t_, addr_[0], addrlen_), SyscallSucceeds());
 
@@ -1283,7 +1301,9 @@ TEST_P(UdpSocketTest, TimestampIoctl) {
   ASSERT_TRUE(tv.tv_sec != 0 || tv.tv_usec != 0);
 }
 
-TEST_P(UdpSocketTest, TimetstampIoctlNothingRead) {
+TEST_P(UdpSocketTest, TimestampIoctlNothingRead) {
+  // TODO(gvisor.dev/issue/1202): ioctl() is not supported by hostinet.
+  SKIP_IF(IsRunningWithHostinet());
   ASSERT_THAT(bind(s_, addr_[0], addrlen_), SyscallSucceeds());
   ASSERT_THAT(connect(t_, addr_[0], addrlen_), SyscallSucceeds());
 
@@ -1294,6 +1314,9 @@ TEST_P(UdpSocketTest, TimetstampIoctlNothingRead) {
 // Test that the timestamp accessed via SIOCGSTAMP is still accessible after
 // SO_TIMESTAMP is enabled and used to retrieve a timestamp.
 TEST_P(UdpSocketTest, TimestampIoctlPersistence) {
+  // TODO(gvisor.dev/issue/1202): ioctl() and SO_TIMESTAMP socket option are not
+  // supported by hostinet.
+  SKIP_IF(IsRunningWithHostinet());
   ASSERT_THAT(bind(s_, addr_[0], addrlen_), SyscallSucceeds());
   ASSERT_THAT(connect(t_, addr_[0], addrlen_), SyscallSucceeds());
 
@@ -1328,7 +1351,6 @@ TEST_P(UdpSocketTest, TimestampIoctlPersistence) {
   msg.msg_controllen = sizeof(cmsgbuf);
   ASSERT_THAT(RetryEINTR(recvmsg)(s_, &msg, 0), SyscallSucceedsWithValue(0));
   struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);
-  cmsg = CMSG_FIRSTHDR(&msg);
   ASSERT_NE(cmsg, nullptr);
 
   // The ioctl should return the exact same values as before.
@@ -1336,6 +1358,149 @@ TEST_P(UdpSocketTest, TimestampIoctlPersistence) {
   ASSERT_THAT(ioctl(s_, SIOCGSTAMP, &tv2), SyscallSucceeds());
   ASSERT_EQ(tv.tv_sec, tv2.tv_sec);
   ASSERT_EQ(tv.tv_usec, tv2.tv_usec);
+}
+
+TEST_P(UdpSocketTest, SetAndReceiveTOS) {
+  // TODO(b/68320120): IP_RECVTOS/IPV6_RECVTCLASS not supported for netstack.
+  SKIP_IF(!IsRunningWithHostinet());
+  ASSERT_THAT(bind(s_, addr_[0], addrlen_), SyscallSucceeds());
+  ASSERT_THAT(connect(t_, addr_[0], addrlen_), SyscallSucceeds());
+
+  /* Allow socket to receive control message. */
+  int recv_level = SOL_IP;
+  int recv_type = IP_RECVTOS;
+  if (GetParam() != AddressFamily::kIpv4) {
+    recv_level = SOL_IPV6;
+    recv_type = IPV6_RECVTCLASS;
+  }
+  int recv_opt = kSockOptOn;
+  ASSERT_THAT(
+      setsockopt(s_, recv_level, recv_type, &recv_opt, sizeof(recv_opt)),
+      SyscallSucceeds());
+
+  /* Allow socket to send control message. */
+  int sent_level = recv_level;
+  int sent_type = IP_TOS;
+  if (sent_level == SOL_IPV6) {
+    sent_type = IPV6_TCLASS;
+  }
+  int sent_tos = IPTOS_LOWDELAY;  // choose some TOS value
+  ASSERT_THAT(
+      setsockopt(t_, sent_level, sent_type, &sent_tos, sizeof(sent_tos)),
+      SyscallSucceeds());
+
+  /* Prepare message to send. */
+  constexpr size_t data_len = 1024;
+  size_t cmsg_data_len = sizeof(int8_t);
+  if (sent_type == IPV6_TCLASS) {
+    cmsg_data_len = sizeof(int);
+  }
+  struct msghdr sent_msg = {};
+  iovec sent_iov = {};
+  char sent_data[data_len];
+  sent_iov.iov_base = &sent_data[0];
+  sent_iov.iov_len = data_len;
+  sent_msg.msg_iov = &sent_iov;
+  sent_msg.msg_iovlen = 1;
+
+  ASSERT_THAT(RetryEINTR(sendmsg)(t_, &sent_msg, 0),
+              SyscallSucceedsWithValue(data_len));
+
+  /* Receive message. */
+  struct msghdr received_msg = {};
+  iovec received_iov{};
+  char received_data[data_len];
+  received_iov.iov_base = &received_data[0];
+  received_iov.iov_len = data_len;
+  received_msg.msg_iov = &received_iov;
+  received_msg.msg_iovlen = 1;
+  std::vector<char> received_cmsgbuf(CMSG_SPACE(cmsg_data_len));
+  received_msg.msg_control = &received_cmsgbuf[0];
+  received_msg.msg_controllen = received_cmsgbuf.size();
+  ASSERT_THAT(RetryEINTR(recvmsg)(s_, &received_msg, 0),
+              SyscallSucceedsWithValue(data_len));
+
+  struct cmsghdr* cmsg = CMSG_FIRSTHDR(&received_msg);
+  ASSERT_NE(cmsg, nullptr);
+  EXPECT_EQ(cmsg->cmsg_len, CMSG_LEN(cmsg_data_len));
+  EXPECT_EQ(cmsg->cmsg_level, sent_level);
+  EXPECT_EQ(cmsg->cmsg_type, sent_type);
+  int8_t received_tos = 0;
+  memcpy(&received_tos, CMSG_DATA(cmsg), sizeof(received_tos));
+  EXPECT_EQ(received_tos, sent_tos);
+}
+
+TEST_P(UdpSocketTest, SendAndReceiveTOS) {
+  // TODO(b/68320120): IP_RECVTOS/IPV6_RECVTCLASS not supported for netstack.
+  SKIP_IF(!IsRunningWithHostinet());
+  ASSERT_THAT(bind(s_, addr_[0], addrlen_), SyscallSucceeds());
+  ASSERT_THAT(connect(t_, addr_[0], addrlen_), SyscallSucceeds());
+
+  /* Allow socket to receive control message. */
+  int recv_level = SOL_IP;
+  int recv_type = IP_RECVTOS;
+  if (GetParam() != AddressFamily::kIpv4) {
+    recv_level = SOL_IPV6;
+    recv_type = IPV6_RECVTCLASS;
+  }
+  int recv_opt = kSockOptOn;
+  ASSERT_THAT(
+      setsockopt(s_, recv_level, recv_type, &recv_opt, sizeof(recv_opt)),
+      SyscallSucceeds());
+
+  /* Prepare message to send. */
+  constexpr size_t data_len = 1024;
+  int sent_level = recv_level;
+  int sent_type = IP_TOS;
+  int sent_tos = IPTOS_LOWDELAY;  // choose some TOS value
+  size_t cmsg_data_len = sizeof(int8_t);
+  if (sent_level == SOL_IPV6) {
+    sent_type = IPV6_TCLASS;
+    cmsg_data_len = sizeof(int);
+  }
+
+  struct msghdr sent_msg = {};
+  iovec sent_iov = {};
+  char sent_data[data_len];
+  sent_iov.iov_base = &sent_data[0];
+  sent_iov.iov_len = data_len;
+  sent_msg.msg_iov = &sent_iov;
+  sent_msg.msg_iovlen = 1;
+  std::vector<char> sent_cmsgbuf(CMSG_SPACE(cmsg_data_len));
+  sent_msg.msg_control = &sent_cmsgbuf[0];
+  sent_msg.msg_controllen = CMSG_LEN(cmsg_data_len);
+
+  /* Manually add control message. */
+  struct cmsghdr* sent_cmsg = CMSG_FIRSTHDR(&sent_msg);
+  sent_cmsg->cmsg_len = CMSG_LEN(cmsg_data_len);
+  sent_cmsg->cmsg_level = sent_level;
+  sent_cmsg->cmsg_type = sent_type;
+  *(int8_t*)CMSG_DATA(sent_cmsg) = sent_tos;
+  ASSERT_THAT(RetryEINTR(sendmsg)(t_, &sent_msg, 0),
+              SyscallSucceedsWithValue(data_len));
+
+  /* Receive message. */
+  struct msghdr received_msg = {};
+  iovec received_iov{};
+  char received_data[data_len];
+  received_iov.iov_base = &received_data[0];
+  received_iov.iov_len = data_len;
+  received_msg.msg_iov = &received_iov;
+  received_msg.msg_iovlen = 1;
+  std::vector<char> received_cmsgbuf(CMSG_SPACE(cmsg_data_len));
+  received_msg.msg_control = &received_cmsgbuf[0];
+  received_msg.msg_controllen = CMSG_LEN(cmsg_data_len);
+  ASSERT_THAT(RetryEINTR(recvmsg)(s_, &received_msg, 0),
+              SyscallSucceedsWithValue(data_len));
+
+  struct cmsghdr* cmsg = CMSG_FIRSTHDR(&received_msg);
+  ASSERT_NE(cmsg, nullptr);
+  EXPECT_EQ(cmsg->cmsg_len, CMSG_LEN(cmsg_data_len));
+  EXPECT_EQ(cmsg->cmsg_level, sent_level);
+  EXPECT_EQ(cmsg->cmsg_type, sent_type);
+  int8_t received_tos = 0;
+  memcpy(&received_tos, CMSG_DATA(cmsg), sizeof(received_tos));
+  EXPECT_EQ(received_tos, sent_tos);
 }
 
 INSTANTIATE_TEST_SUITE_P(AllInetTests, UdpSocketTest,
