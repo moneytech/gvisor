@@ -308,7 +308,7 @@ type ControlMessages struct {
 	// HasTimestamp indicates whether Timestamp is valid/set.
 	HasTimestamp bool
 
-	// Timestamp is the time (in ns) that the last packet used to create
+	// Timestamp is the time (in ns) that the last packed used to create
 	// the read data was received.
 	Timestamp int64
 
@@ -575,6 +575,11 @@ type KeepaliveIntervalOption time.Duration
 // of un-ACKed TCP keepalives that will be sent before the connection is
 // closed.
 type KeepaliveCountOption int
+
+// TCPUserTimeoutOption is used by SetSockOpt/GetSockOpt to specify a user
+// specified timeout for a given TCP connection.
+// See: RFC5482 for details.
+type TCPUserTimeoutOption time.Duration
 
 // CongestionControlOption is used by SetSockOpt/GetSockOpt to set/get
 // the current congestion control algorithm.

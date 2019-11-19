@@ -162,13 +162,15 @@ func (*protocol) HandleUnknownDestinationPacket(r *stack.Route, id stack.Transpo
 func replyWithReset(s *segment) {
 	// Get the seqnum from the packet if the ack flag is set.
 	seq := seqnum.Value(0)
+	ack := seqnum.Value(0)
+	flags := byte(header.TCPFlagRst)
 	if s.flagIsSet(header.TCPFlagAck) {
 		seq = s.ackNumber
+	} else {
+		flags |= header.TCPFlagAck
+		ack = s.sequenceNumber.Add(s.logicalLen())
 	}
-
-	ack := s.sequenceNumber.Add(s.logicalLen())
-
-	sendTCP(&s.route, s.id, buffer.VectorisedView{}, s.route.DefaultTTL(), stack.DefaultTOS, header.TCPFlagRst|header.TCPFlagAck, seq, ack, 0 /* rcvWnd */, nil /* options */, nil /* gso */)
+	sendTCP(&s.route, s.id, buffer.VectorisedView{}, s.route.DefaultTTL(), stack.DefaultTOS, flags, seq, ack, 0 /* rcvWnd */, nil /* options */, nil /* gso */)
 }
 
 // SetOption implements TransportProtocol.SetOption.

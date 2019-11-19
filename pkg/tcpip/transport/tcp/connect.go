@@ -853,7 +853,7 @@ func (e *endpoint) resetConnectionLocked(err *tcpip.Error) {
 	}
 	e.state = StateError
 	e.HardError = err
-	if err != tcpip.ErrConnectionReset {
+	if err != tcpip.ErrConnectionReset && err != tcpip.ErrTimeout {
 		// The exact sequence number to be used for the RST is the same as the
 		// one used by Linux. We need to handle the case of window being shrunk
 		// which can cause sndNxt to be outside the acceptable window on the
@@ -1053,10 +1053,21 @@ func (e *endpoint) handleSegments() *tcpip.Error {
 // keepalive packets periodically when the connection is idle. If we don't hear
 // from the other side after a number of tries, we terminate the connection.
 func (e *endpoint) keepaliveTimerExpired() *tcpip.Error {
+	e.mu.RLock()
+	userTimeout := e.userTimeout
+	e.mu.RUnlock()
+
 	e.keepalive.Lock()
 	if !e.keepalive.enabled || !e.keepalive.timer.checkExpiration() {
 		e.keepalive.Unlock()
 		return nil
+	}
+
+	// If a userTimeout is set then abort the connection if it is
+	// exceeded.
+	if userTimeout != 0 && time.Since(e.rcv.lastRcvdAckTime) >= userTimeout && e.keepalive.unacked > 0 {
+		e.keepalive.Unlock()
+		return tcpip.ErrTimeout
 	}
 
 	if e.keepalive.unacked >= e.keepalive.count {
@@ -1077,7 +1088,6 @@ func (e *endpoint) keepaliveTimerExpired() *tcpip.Error {
 // whether it is enabled for this endpoint.
 func (e *endpoint) resetKeepaliveTimer(receivedData bool) {
 	e.keepalive.Lock()
-	defer e.keepalive.Unlock()
 	if receivedData {
 		e.keepalive.unacked = 0
 	}
@@ -1085,6 +1095,7 @@ func (e *endpoint) resetKeepaliveTimer(receivedData bool) {
 	// data to send.
 	if !e.keepalive.enabled || e.snd == nil || e.snd.sndUna != e.snd.sndNxt {
 		e.keepalive.timer.disable()
+		e.keepalive.Unlock()
 		return
 	}
 	if e.keepalive.unacked > 0 {
@@ -1092,6 +1103,7 @@ func (e *endpoint) resetKeepaliveTimer(receivedData bool) {
 	} else {
 		e.keepalive.timer.enable(e.keepalive.idle)
 	}
+	e.keepalive.Unlock()
 }
 
 // disableKeepaliveTimer stops the keepalive timer.
@@ -1392,6 +1404,7 @@ func (e *endpoint) protocolMainLoop(handshake bool) *tcpip.Error {
 		if s == nil {
 			break
 		}
+
 		e.tryDeliverSegmentFromClosedEndpoint(s)
 	}
 

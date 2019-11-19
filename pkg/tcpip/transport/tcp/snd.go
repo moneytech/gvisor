@@ -28,8 +28,11 @@ import (
 )
 
 const (
-	// minRTO is the minimum allowed value for the retransmit timeout.
-	minRTO = 200 * time.Millisecond
+	// MinRTO is the minimum allowed value for the retransmit timeout.
+	MinRTO = 200 * time.Millisecond
+
+	// MaxRTO is the maximum allowed value for the retransmit timeout.
+	MaxRTO = 60 * time.Second
 
 	// InitialCwnd is the initial congestion window.
 	InitialCwnd = 10
@@ -133,6 +136,10 @@ type sender struct {
 
 	// rttMeasureTime is the time when the rttMeasureSeqNum was sent.
 	rttMeasureTime time.Time `state:".(unixTime)"`
+
+	// retransmitTime is the time when the first retransmit happened
+	// due to RTO expiration.
+	retransmitTime time.Time `state:".(unixTime)"`
 
 	closed      bool
 	writeNext   *segment
@@ -392,8 +399,8 @@ func (s *sender) updateRTO(rtt time.Duration) {
 
 	s.rto = s.rtt.srtt + 4*s.rtt.rttvar
 	s.rtt.Unlock()
-	if s.rto < minRTO {
-		s.rto = minRTO
+	if s.rto < MinRTO {
+		s.rto = MinRTO
 	}
 }
 
@@ -438,14 +445,40 @@ func (s *sender) retransmitTimerExpired() bool {
 	s.ep.stack.Stats().TCP.Timeouts.Increment()
 	s.ep.stats.SendErrors.Timeouts.Increment()
 
-	// Give up if we've waited more than a minute since the last resend.
-	if s.rto >= 60*time.Second {
+	// Give up if we've waited more than a minute since the last resend or
+	// if a user time out is set and we have exceeded the user specified
+	// timeout since the first retransmission.
+	s.ep.mu.RLock()
+	uto := s.ep.userTimeout
+	s.ep.mu.RUnlock()
+
+	if uto != 0 && !s.retransmitTime.IsZero() && time.Since(s.retransmitTime) > uto || s.rto >= MaxRTO {
 		return false
+	}
+
+	if s.retransmitTime.IsZero() {
+		// We store the original xmitTime of the segment that we are
+		// about to retransmit as the retransmission time. This is
+		// required as by the time the retransmitTimer has expired the
+		// segment has already been sent and unacked for the RTO at the
+		// time the segment was sent.
+		s.retransmitTime = s.writeList.Front().xmitTime
 	}
 
 	// Set new timeout. The timer will be restarted by the call to sendData
 	// below.
 	s.rto *= 2
+
+	// Cap RTO to userTimeout if a userTimeout was explicitly specified.
+	if uto != 0 {
+		remaining := uto - time.Since(s.retransmitTime)
+		if remaining <= 0 {
+			return false
+		}
+		if remaining < s.rto {
+			s.rto = remaining
+		}
+	}
 
 	// See: https://tools.ietf.org/html/rfc6582#section-3.2 Step 4.
 	//
@@ -1169,6 +1202,8 @@ func (s *sender) handleRcvdSegment(seg *segment) {
 		// RFC 6298 Rule 5.3
 		if s.sndUna == s.sndNxt {
 			s.outstanding = 0
+			// reset retransmitTime to the zero value.
+			s.retransmitTime = time.Time{}
 			s.resendTimer.disable()
 		}
 	}
