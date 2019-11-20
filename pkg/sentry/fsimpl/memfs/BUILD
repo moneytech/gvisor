@@ -32,6 +32,7 @@ go_library(
     deps = [
         "//pkg/abi/linux",
         "//pkg/amutex",
+        "//pkg/fspath",
         "//pkg/sentry/arch",
         "//pkg/sentry/context",
         "//pkg/sentry/kernel/auth",
@@ -49,6 +50,7 @@ go_test(
     deps = [
         ":memfs",
         "//pkg/abi/linux",
+        "//pkg/refs",
         "//pkg/sentry/context",
         "//pkg/sentry/context/contexttest",
         "//pkg/sentry/fs",

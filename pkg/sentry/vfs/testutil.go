@@ -15,7 +15,10 @@
 package vfs
 
 import (
+	"fmt"
+
 	"gvisor.dev/gvisor/pkg/abi/linux"
+	"gvisor.dev/gvisor/pkg/fspath"
 	"gvisor.dev/gvisor/pkg/sentry/context"
 	"gvisor.dev/gvisor/pkg/sentry/kernel/auth"
 	"gvisor.dev/gvisor/pkg/syserror"
@@ -33,10 +36,10 @@ type FDTestFilesystem struct {
 	vfsfs Filesystem
 }
 
-// NewFilesystem implements FilesystemType.NewFilesystem.
-func (fstype FDTestFilesystemType) NewFilesystem(ctx context.Context, creds *auth.Credentials, source string, opts NewFilesystemOptions) (*Filesystem, *Dentry, error) {
+// GetFilesystem implements FilesystemType.GetFilesystem.
+func (fstype FDTestFilesystemType) GetFilesystem(ctx context.Context, vfsObj *VirtualFilesystem, creds *auth.Credentials, source string, opts GetFilesystemOptions) (*Filesystem, *Dentry, error) {
 	var fs FDTestFilesystem
-	fs.vfsfs.Init(&fs)
+	fs.vfsfs.Init(vfsObj, &fs)
 	return &fs.vfsfs, fs.NewDentry(), nil
 }
 
@@ -114,6 +117,12 @@ func (fs *FDTestFilesystem) UnlinkAt(ctx context.Context, rp *ResolvingPath) err
 	return syserror.EPERM
 }
 
+// PrependPath implements FilesystemImpl.PrependPath.
+func (fs *FDTestFilesystem) PrependPath(ctx context.Context, vfsroot, vd VirtualDentry, b *fspath.Builder) error {
+	b.PrependComponent(fmt.Sprintf("vfs.fdTestDentry:%p", vd.dentry.impl.(*fdTestDentry)))
+	return PrependPathSyntheticError{}
+}
+
 type fdTestDentry struct {
 	vfsd Dentry
 }
@@ -126,14 +135,14 @@ func (fs *FDTestFilesystem) NewDentry() *Dentry {
 }
 
 // IncRef implements DentryImpl.IncRef.
-func (d *fdTestDentry) IncRef(vfsfs *Filesystem) {
+func (d *fdTestDentry) IncRef() {
 }
 
 // TryIncRef implements DentryImpl.TryIncRef.
-func (d *fdTestDentry) TryIncRef(vfsfs *Filesystem) bool {
+func (d *fdTestDentry) TryIncRef() bool {
 	return true
 }
 
 // DecRef implements DentryImpl.DecRef.
-func (d *fdTestDentry) DecRef(vfsfs *Filesystem) {
+func (d *fdTestDentry) DecRef() {
 }
