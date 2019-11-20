@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 
 	"gvisor.dev/gvisor/pkg/abi/linux"
+	"gvisor.dev/gvisor/pkg/fspath"
 	"gvisor.dev/gvisor/pkg/sentry/context"
 	"gvisor.dev/gvisor/pkg/sentry/vfs"
 	"gvisor.dev/gvisor/pkg/syserror"
@@ -159,7 +160,7 @@ func (fs *filesystem) GetDentryAt(ctx context.Context, rp *vfs.ResolvingPath, op
 			return nil, err
 		}
 	}
-	inode.incRef() // vfsd.IncRef(&fs.vfsfs)
+	inode.incRef()
 	return vfsd, nil
 }
 
@@ -379,6 +380,7 @@ func (i *inode) open(ctx context.Context, rp *vfs.ResolvingPath, vfsd *vfs.Dentr
 			return nil, err
 		}
 	}
+	mnt := rp.Mount()
 	switch impl := i.impl.(type) {
 	case *regularFile:
 		var fd regularFileFD
@@ -386,12 +388,14 @@ func (i *inode) open(ctx context.Context, rp *vfs.ResolvingPath, vfsd *vfs.Dentr
 		fd.readable = vfs.MayReadFileWithOpenFlags(flags)
 		fd.writable = vfs.MayWriteFileWithOpenFlags(flags)
 		if fd.writable {
-			if err := rp.Mount().CheckBeginWrite(); err != nil {
+			if err := mnt.CheckBeginWrite(); err != nil {
 				return nil, err
 			}
-			// Mount.EndWrite() is called by regularFileFD.Release().
+			// mnt.EndWrite() is called by regularFileFD.Release().
 		}
-		fd.vfsfd.Init(&fd, rp.Mount(), vfsd)
+		mnt.IncRef()
+		vfsd.IncRef()
+		fd.vfsfd.Init(&fd, mnt, vfsd)
 		if flags&linux.O_TRUNC != 0 {
 			impl.mu.Lock()
 			impl.data = impl.data[:0]
@@ -405,7 +409,9 @@ func (i *inode) open(ctx context.Context, rp *vfs.ResolvingPath, vfsd *vfs.Dentr
 			return nil, syserror.EISDIR
 		}
 		var fd directoryFD
-		fd.vfsfd.Init(&fd, rp.Mount(), vfsd)
+		mnt.IncRef()
+		vfsd.IncRef()
+		fd.vfsfd.Init(&fd, mnt, vfsd)
 		fd.flags = flags
 		return &fd.vfsfd, nil
 	case *symlink:
@@ -576,4 +582,11 @@ func (fs *filesystem) UnlinkAt(ctx context.Context, rp *vfs.ResolvingPath) error
 	vfsd.Parent().Impl().(*dentry).inode.impl.(*directory).childList.Remove(vfsd.Impl().(*dentry))
 	inode.decLinksLocked()
 	return nil
+}
+
+// PrependPath implements vfs.FilesystemImpl.PrependPath.
+func (fs *filesystem) PrependPath(ctx context.Context, vfsroot, vd vfs.VirtualDentry, b *fspath.Builder) error {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	return vfs.GenericPrependPath(vfsroot, vd, b)
 }

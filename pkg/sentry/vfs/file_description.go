@@ -47,21 +47,32 @@ type FileDescription struct {
 	impl FileDescriptionImpl
 }
 
-// Init must be called before first use of fd. It takes references on mnt and
-// d.
+// Init must be called before first use of fd. It takes ownership of references
+// on mnt and d held by the caller.
 func (fd *FileDescription) Init(impl FileDescriptionImpl, mnt *Mount, d *Dentry) {
 	fd.refs = 1
 	fd.vd = VirtualDentry{
 		mount:  mnt,
 		dentry: d,
 	}
-	fd.vd.IncRef()
 	fd.impl = impl
 }
 
 // Impl returns the FileDescriptionImpl associated with fd.
 func (fd *FileDescription) Impl() FileDescriptionImpl {
 	return fd.impl
+}
+
+// Mount returns the mount on which fd was opened. It does not take a reference
+// on the returned Mount.
+func (fd *FileDescription) Mount() *Mount {
+	return fd.vd.mount
+}
+
+// Dentry returns the dentry at which fd was opened. It does not take a
+// reference on the returned Dentry.
+func (fd *FileDescription) Dentry() *Dentry {
+	return fd.vd.dentry
 }
 
 // VirtualDentry returns the location at which fd was opened. It does not take
@@ -73,6 +84,22 @@ func (fd *FileDescription) VirtualDentry() VirtualDentry {
 // IncRef increments fd's reference count.
 func (fd *FileDescription) IncRef() {
 	atomic.AddInt64(&fd.refs, 1)
+}
+
+// TryIncRef increments fd's reference count and returns true. If fd's
+// reference count is already zero, TryIncRef does nothing and returns false.
+//
+// TryIncRef does not require that a reference is held on fd.
+func (fd *FileDescription) TryIncRef() bool {
+	for {
+		refs := atomic.LoadInt64(&fd.refs)
+		if refs <= 0 {
+			return false
+		}
+		if atomic.CompareAndSwapInt64(&fd.refs, refs, refs+1) {
+			return true
+		}
+	}
 }
 
 // DecRef decrements fd's reference count.
@@ -213,4 +240,134 @@ type IterDirentsCallback interface {
 	// terminate now and restart with the same Dirent the next time it is
 	// called.
 	Handle(dirent Dirent) bool
+}
+
+// OnClose is called when a file descriptor representing the FileDescription is
+// closed. Returning a non-nil error should not prevent the file descriptor
+// from being closed.
+func (fd *FileDescription) OnClose(ctx context.Context) error {
+	return fd.impl.OnClose(ctx)
+}
+
+// StatusFlags returns file description status flags, as for fcntl(F_GETFL).
+func (fd *FileDescription) StatusFlags(ctx context.Context) (uint32, error) {
+	flags, err := fd.impl.StatusFlags(ctx)
+	flags |= linux.O_LARGEFILE
+	return flags, err
+}
+
+// SetStatusFlags sets file description status flags, as for fcntl(F_SETFL).
+func (fd *FileDescription) SetStatusFlags(ctx context.Context, flags uint32) error {
+	return fd.impl.SetStatusFlags(ctx, flags)
+}
+
+// Stat returns metadata for the file represented by fd.
+func (fd *FileDescription) Stat(ctx context.Context, opts StatOptions) (linux.Statx, error) {
+	return fd.impl.Stat(ctx, opts)
+}
+
+// SetStat updates metadata for the file represented by fd.
+func (fd *FileDescription) SetStat(ctx context.Context, opts SetStatOptions) error {
+	return fd.impl.SetStat(ctx, opts)
+}
+
+// StatFS returns metadata for the filesystem containing the file represented
+// by fd.
+func (fd *FileDescription) StatFS(ctx context.Context) (linux.Statfs, error) {
+	return fd.impl.StatFS(ctx)
+}
+
+// PRead reads from the file represented by fd into dst, starting at the given
+// offset, and returns the number of bytes read. PRead is permitted to return
+// partial reads with a nil error.
+func (fd *FileDescription) PRead(ctx context.Context, dst usermem.IOSequence, offset int64, opts ReadOptions) (int64, error) {
+	return fd.impl.PRead(ctx, dst, offset, opts)
+}
+
+// Read is similar to PRead, but does not specify an offset.
+func (fd *FileDescription) Read(ctx context.Context, dst usermem.IOSequence, opts ReadOptions) (int64, error) {
+	return fd.impl.Read(ctx, dst, opts)
+}
+
+// PWrite writes src to the file represented by fd, starting at the given
+// offset, and returns the number of bytes written. PWrite is permitted to
+// return partial writes with a nil error.
+func (fd *FileDescription) PWrite(ctx context.Context, src usermem.IOSequence, offset int64, opts WriteOptions) (int64, error) {
+	return fd.impl.PWrite(ctx, src, offset, opts)
+}
+
+// Write is similar to PWrite, but does not specify an offset.
+func (fd *FileDescription) Write(ctx context.Context, src usermem.IOSequence, opts WriteOptions) (int64, error) {
+	return fd.impl.Write(ctx, src, opts)
+}
+
+// IterDirents invokes cb on each entry in the directory represented by fd. If
+// IterDirents has been called since the last call to Seek, it continues
+// iteration from the end of the last call.
+func (fd *FileDescription) IterDirents(ctx context.Context, cb IterDirentsCallback) error {
+	return fd.impl.IterDirents(ctx, cb)
+}
+
+// Seek changes fd's offset (assuming one exists) and returns its new value.
+func (fd *FileDescription) Seek(ctx context.Context, offset int64, whence int32) (int64, error) {
+	return fd.impl.Seek(ctx, offset, whence)
+}
+
+// Sync has the semantics of fsync(2).
+func (fd *FileDescription) Sync(ctx context.Context) error {
+	return fd.impl.Sync(ctx)
+}
+
+// ConfigureMMap mutates opts to implement mmap(2) for the file represented by
+// fd.
+func (fd *FileDescription) ConfigureMMap(ctx context.Context, opts *memmap.MMapOpts) error {
+	return fd.impl.ConfigureMMap(ctx, opts)
+}
+
+// Ioctl implements the ioctl(2) syscall.
+func (fd *FileDescription) Ioctl(ctx context.Context, uio usermem.IO, args arch.SyscallArguments) (uintptr, error) {
+	return fd.impl.Ioctl(ctx, uio, args)
+}
+
+// SyncFS instructs the filesystem containing fd to execute the semantics of
+// syncfs(2).
+func (fd *FileDescription) SyncFS(ctx context.Context) error {
+	return fd.vd.mount.fs.impl.Sync(ctx)
+}
+
+// MappedName implements memmap.MappingIdentity.MappedName.
+func (fd *FileDescription) MappedName(ctx context.Context) string {
+	vfsroot := RootFromContext(ctx)
+	s, _ := fd.vd.mount.vfs.PathnameWithDeleted(ctx, vfsroot, fd.vd)
+	if vfsroot.Ok() {
+		vfsroot.DecRef()
+	}
+	return s
+}
+
+// DeviceID implements memmap.MappingIdentity.DeviceID.
+func (fd *FileDescription) DeviceID() uint64 {
+	stat, err := fd.impl.Stat(context.Background(), StatOptions{
+		Mask: linux.STATX_INO,
+	})
+	if err != nil {
+		return 0
+	}
+	return uint64(linux.MakeDeviceID(uint16(stat.DevMajor), stat.DevMinor))
+}
+
+// InodeID implements memmap.MappingIdentity.InodeID.
+func (fd *FileDescription) InodeID() uint64 {
+	stat, err := fd.impl.Stat(context.Background(), StatOptions{
+		Mask: linux.STATX_INO,
+	})
+	if err != nil {
+		return 0
+	}
+	return stat.Ino
+}
+
+// Msync implements memmap.MappingIdentity.Msync.
+func (fd *FileDescription) Msync(ctx context.Context, mr memmap.MappableRange) error {
+	return fd.impl.Sync(ctx)
 }
