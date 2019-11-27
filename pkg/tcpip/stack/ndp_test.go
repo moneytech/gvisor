@@ -103,6 +103,12 @@ type ndpPrefixEvent struct {
 	discovered bool
 }
 
+type ndpRDNSSEvent struct {
+	nicID    tcpip.NICID
+	addrs    []tcpip.Address
+	lifetime time.Duration
+}
+
 var _ stack.NDPDispatcher = (*ndpDispatcher)(nil)
 
 // ndpDispatcher implements NDPDispatcher so tests can know when various NDP
@@ -113,6 +119,7 @@ type ndpDispatcher struct {
 	rememberRouter bool
 	prefixC        chan ndpPrefixEvent
 	rememberPrefix bool
+	rdnssC         chan ndpRDNSSEvent
 	routeTable     []tcpip.Route
 }
 
@@ -224,6 +231,17 @@ func (n *ndpDispatcher) OnOnLinkPrefixInvalidated(nicID tcpip.NICID, prefix tcpi
 	}
 	n.routeTable = rt
 	return rt
+}
+
+// Implements stack.NDPDispatcher.OnRecursiveDNSServerOption.
+func (n *ndpDispatcher) OnRecursiveDNSServerOption(nicID tcpip.NICID, addrs []tcpip.Address, lifetime time.Duration) {
+	if n.rdnssC != nil {
+		n.rdnssC <- ndpRDNSSEvent{
+			nicID,
+			addrs,
+			lifetime,
+		}
+	}
 }
 
 // TestDADResolve tests that an address successfully resolves after performing
@@ -1364,10 +1382,10 @@ func TestPrefixDiscoveryWithInfiniteLifetime(t *testing.T) {
 	// invalidate the prefix.
 	const testInfiniteLifetimeSeconds = 2
 	const testInfiniteLifetime = testInfiniteLifetimeSeconds * time.Second
-	saved := header.NDPPrefixInformationInfiniteLifetime
-	header.NDPPrefixInformationInfiniteLifetime = testInfiniteLifetime
+	saved := header.NDPInfiniteLifetime
+	header.NDPInfiniteLifetime = testInfiniteLifetime
 	defer func() {
-		header.NDPPrefixInformationInfiniteLifetime = saved
+		header.NDPInfiniteLifetime = saved
 	}()
 
 	prefix := tcpip.AddressWithPrefix{
@@ -1535,5 +1553,98 @@ func TestPrefixDiscoveryMaxOnLinkPrefixes(t *testing.T) {
 	// stack.MaxDiscoveredOnLinkPrefixes discovered on-link prefixes.
 	if got := s.GetRouteTable(); !cmp.Equal(got, expectedRt[:]) {
 		t.Fatalf("got GetRouteTable = %v, want = %v", got, expectedRt)
+	}
+}
+
+// TestNDPRecursiveDNSServerDispatch tests that we properly dispatch an event
+// to the integrator when an RA is received with the NDP Recursive DNS Server
+// option with at least one address.
+func TestNDPRecursiveDNSServerDispatch(t *testing.T) {
+	ndpDisp := ndpDispatcher{
+		rdnssC: make(chan ndpRDNSSEvent, 10),
+	}
+	e := channel.New(10, 1280, linkAddr1)
+	s := stack.New(stack.Options{
+		NetworkProtocols: []stack.NetworkProtocol{ipv6.NewProtocol()},
+		NDPConfigs: stack.NDPConfigurations{
+			HandleRAs: true,
+		},
+		NDPDisp: &ndpDisp,
+	})
+	if err := s.CreateNIC(1, e); err != nil {
+		t.Fatalf("CreateNIC(1) = %s", err)
+	}
+
+	optSer := header.NDPOptionsSerializer{
+		header.NDPRecursiveDNSServer([]byte{
+			0, 0,
+			0, 0, 0, 2,
+			1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 1,
+		}),
+		header.NDPRecursiveDNSServer([]byte{
+			0, 0,
+			0, 0, 0, 1,
+			1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 1,
+			1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 2,
+		}),
+		header.NDPRecursiveDNSServer([]byte{
+			0, 0,
+			0, 0, 0, 0,
+			1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 1,
+			1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 2,
+			1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 3,
+		}),
+	}
+	expected := []struct {
+		addrs    []tcpip.Address
+		lifetime time.Duration
+	}{
+		{
+			[]tcpip.Address{
+				"\x01\x02\x03\x04\x05\x06\x07\x08\x00\x00\x00\x00\x00\x00\x00\x01",
+			},
+			2 * time.Second,
+		},
+		{
+			[]tcpip.Address{
+				"\x01\x02\x03\x04\x05\x06\x07\x08\x00\x00\x00\x00\x00\x00\x00\x01",
+				"\x01\x02\x03\x04\x05\x06\x07\x08\x00\x00\x00\x00\x00\x00\x00\x02",
+			},
+			time.Second,
+		},
+		{
+			[]tcpip.Address{
+				"\x01\x02\x03\x04\x05\x06\x07\x08\x00\x00\x00\x00\x00\x00\x00\x01",
+				"\x01\x02\x03\x04\x05\x06\x07\x08\x00\x00\x00\x00\x00\x00\x00\x02",
+				"\x01\x02\x03\x04\x05\x06\x07\x08\x00\x00\x00\x00\x00\x00\x00\x03",
+			},
+			0,
+		},
+	}
+
+	e.InjectInbound(header.IPv6ProtocolNumber, raBufWithOpts(llAddr1, 0, optSer))
+
+	for i := 0; i < len(expected); i++ {
+		select {
+		case rdnss := <-ndpDisp.rdnssC:
+			if rdnss.nicID != 1 {
+				t.Errorf("got %d-th rdnss nicID = %d, want = 1", i, rdnss.nicID)
+			}
+			if !cmp.Equal(rdnss.addrs, expected[i].addrs) {
+				t.Errorf("got %d-th rdnss addrs = %v, want = %v", i, rdnss.addrs, expected[i].addrs)
+			}
+			if rdnss.lifetime != expected[i].lifetime {
+				t.Errorf("got %d-th rdnss lifetime = %s, want = %s", i, rdnss.lifetime, expected[i].lifetime)
+			}
+		case <-time.After(defaultTimeout):
+			t.Fatal("timed out waiting for RDNSS option")
+		}
+	}
+
+	// Should have no more RDNSS options.
+	select {
+	case <-ndpDisp.rdnssC:
+		t.Fatal("unexpectedly got a new RDNSS option")
+	case <-time.After(time.Second):
 	}
 }
