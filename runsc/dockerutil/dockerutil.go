@@ -380,6 +380,21 @@ func (d *Docker) FindPort(sandboxPort int) (int, error) {
 	return port, nil
 }
 
+// FindIP returns the IP address of the container as a string.
+func (d *Docker) FindIP() (string, error) {
+	const format = `{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}`
+	out, err := do("inspect", "-f", format, d.Name)
+	if err != nil {
+		return "", fmt.Errorf("error retrieving IP: %v", err)
+	}
+	if len(out) == 0 {
+		return "", fmt.Errorf("zero length IP returned")
+	}
+	// Clean up the trailing newline.
+	out = out[:len(out)-1]
+	return out, nil
+}
+
 // SandboxPid returns the PID to the sandbox process.
 func (d *Docker) SandboxPid() (int, error) {
 	out, err := do("inspect", "-f={{.State.Pid}}", d.Name)
