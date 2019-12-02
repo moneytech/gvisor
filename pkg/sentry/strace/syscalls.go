@@ -206,6 +206,14 @@ const (
 	// PollFDs is an array of struct pollfd. The number of entries in the
 	// array is in the next argument.
 	PollFDs
+
+	// SelectFDSets is the first of three fd_set arguments in
+	// select(2)/pselect(2). The number of fds represented is in the
+	// previous argument, and the next two arguments must be Skip.
+	SelectFDSets
+
+	// Skip is an argument to skip over in formatting.
+	Skip
 )
 
 // defaultFormat is the syscall argument format to use if the actual format is

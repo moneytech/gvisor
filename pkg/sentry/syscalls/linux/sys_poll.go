@@ -197,9 +197,9 @@ func doPoll(t *kernel.Task, addr usermem.Addr, nfds uint, timeout time.Duration)
 	return remainingTimeout, n, err
 }
 
-func doSelect(t *kernel.Task, nfds int, readFDs, writeFDs, exceptFDs usermem.Addr, timeout time.Duration) (uintptr, error) {
+func CopyInFDSets(t *kernel.Task, nfds int, readFDs, writeFDs, exceptFDs usermem.Addr) (r, w, e []byte, err error) {
 	if nfds < 0 || nfds > fileCap {
-		return 0, syserror.EINVAL
+		return nil, nil, nil, syserror.EINVAL
 	}
 
 	// Capture all the provided input vectors.
@@ -208,13 +208,13 @@ func doSelect(t *kernel.Task, nfds int, readFDs, writeFDs, exceptFDs usermem.Add
 	byteCount := (nfds + 7) / 8
 
 	bitsInLastPartialByte := uint(nfds % 8)
-	r := make([]byte, byteCount)
-	w := make([]byte, byteCount)
-	e := make([]byte, byteCount)
+	r = make([]byte, byteCount)
+	w = make([]byte, byteCount)
+	e = make([]byte, byteCount)
 
 	if readFDs != 0 {
 		if _, err := t.CopyIn(readFDs, &r); err != nil {
-			return 0, err
+			return nil, nil, nil, err
 		}
 		// Mask out bits above nfds.
 		if bitsInLastPartialByte != 0 {
@@ -224,7 +224,7 @@ func doSelect(t *kernel.Task, nfds int, readFDs, writeFDs, exceptFDs usermem.Add
 
 	if writeFDs != 0 {
 		if _, err := t.CopyIn(writeFDs, &w); err != nil {
-			return 0, err
+			return nil, nil, nil, err
 		}
 		if bitsInLastPartialByte != 0 {
 			w[byteCount-1] &^= byte(0xff) << bitsInLastPartialByte
@@ -233,17 +233,25 @@ func doSelect(t *kernel.Task, nfds int, readFDs, writeFDs, exceptFDs usermem.Add
 
 	if exceptFDs != 0 {
 		if _, err := t.CopyIn(exceptFDs, &e); err != nil {
-			return 0, err
+			return nil, nil, nil, err
 		}
 		if bitsInLastPartialByte != 0 {
 			e[byteCount-1] &^= byte(0xff) << bitsInLastPartialByte
 		}
 	}
+	return r, w, e, nil
+}
+
+func doSelect(t *kernel.Task, nfds int, readFDs, writeFDs, exceptFDs usermem.Addr, timeout time.Duration) (uintptr, error) {
+	r, w, e, err := CopyInFDSets(t, nfds, readFDs, writeFDs, exceptFDs)
+	if err != nil {
+		return 0, err
+	}
 
 	// Count how many FDs are actually being requested so that we can build
 	// a PollFD array.
 	fdCount := 0
-	for i := 0; i < byteCount; i++ {
+	for i := 0; i < len(r); i++ {
 		v := r[i] | w[i] | e[i]
 		for v != 0 {
 			v &= (v - 1)
@@ -254,7 +262,7 @@ func doSelect(t *kernel.Task, nfds int, readFDs, writeFDs, exceptFDs usermem.Add
 	// Build the PollFD array.
 	pfd := make([]linux.PollFD, 0, fdCount)
 	var fd int32
-	for i := 0; i < byteCount; i++ {
+	for i := 0; i < len(r); i++ {
 		rV, wV, eV := r[i], w[i], e[i]
 		v := rV | wV | eV
 		m := byte(1)
@@ -295,7 +303,7 @@ func doSelect(t *kernel.Task, nfds int, readFDs, writeFDs, exceptFDs usermem.Add
 	}
 
 	// Do the syscall, then count the number of bits set.
-	_, _, err := pollBlock(t, pfd, timeout)
+	_, _, err = pollBlock(t, pfd, timeout)
 	if err != nil {
 		return 0, syserror.ConvertIntr(err, syserror.EINTR)
 	}
