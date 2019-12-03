@@ -148,6 +148,60 @@ TEST_P(SocketInetLoopbackTest, TCP) {
   ASSERT_THAT(shutdown(conn_fd.get(), SHUT_RDWR), SyscallSucceeds());
 }
 
+TEST_P(SocketInetLoopbackTest, TCPListenUnbound) {
+  auto const& param = GetParam();
+
+  TestAddress const& listener = param.listener;
+  TestAddress const& connector = param.connector;
+
+  // Create the listening socket.
+  const FileDescriptor listen_fd = ASSERT_NO_ERRNO_AND_VALUE(
+      Socket(listener.family(), SOCK_STREAM, IPPROTO_TCP));
+  sockaddr_storage listen_addr = listener.addr;
+  ASSERT_THAT(listen(listen_fd.get(), SOMAXCONN), SyscallSucceeds());
+
+  // Get the port bound by the listening socket.
+  socklen_t addrlen = listener.addr_len;
+  ASSERT_THAT(getsockname(listen_fd.get(),
+                          reinterpret_cast<sockaddr*>(&listen_addr), &addrlen),
+              SyscallSucceeds());
+  uint16_t const port =
+      ASSERT_NO_ERRNO_AND_VALUE(AddrPort(listener.family(), listen_addr));
+
+  if (listener.family() == AF_INET) {
+    auto addr_out = reinterpret_cast<struct sockaddr_in*>(&listen_addr);
+    EXPECT_EQ(addrlen, sizeof(*addr_out));
+    EXPECT_EQ(addr_out->sin_addr.s_addr, htonl(INADDR_ANY));
+  } else {
+    auto addr_out = reinterpret_cast<struct sockaddr_in6*>(&listen_addr);
+    EXPECT_EQ(addrlen, sizeof(*addr_out));
+    struct in6_addr any = IN6ADDR_ANY_INIT;
+    EXPECT_EQ(memcmp(&addr_out->sin6_addr, &any, sizeof(in6_addr)), 0);
+  }
+
+  // Connect to the listening socket.
+  const FileDescriptor conn_fd = ASSERT_NO_ERRNO_AND_VALUE(
+      Socket(connector.family(), SOCK_STREAM, IPPROTO_TCP));
+  sockaddr_storage conn_addr = connector.addr;
+  ASSERT_NO_ERRNO(SetAddrPort(connector.family(), &conn_addr, port));
+  ASSERT_THAT(RetryEINTR(connect)(conn_fd.get(),
+                                  reinterpret_cast<sockaddr*>(&conn_addr),
+                                  connector.addr_len),
+              SyscallSucceeds());
+
+  // Accept the connection.
+  //
+  // We have to assign a name to the accepted socket, as unamed temporary
+  // objects are destructed upon full evaluation of the expression it is in,
+  // potentially causing the connecting socket to fail to shutdown properly.
+  auto accepted =
+      ASSERT_NO_ERRNO_AND_VALUE(Accept(listen_fd.get(), nullptr, nullptr));
+
+  ASSERT_THAT(shutdown(listen_fd.get(), SHUT_RDWR), SyscallSucceeds());
+
+  ASSERT_THAT(shutdown(conn_fd.get(), SHUT_RDWR), SyscallSucceeds());
+}
+
 TEST_P(SocketInetLoopbackTest, TCPListenClose) {
   auto const& param = GetParam();
 
