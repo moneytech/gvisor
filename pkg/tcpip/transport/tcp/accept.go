@@ -339,12 +339,11 @@ func (l *listenContext) closeAllPendingEndpoints() {
 // instead.
 func (e *endpoint) deliverAccepted(n *endpoint) {
 	e.mu.Lock()
-	state := e.state
 	e.pendingAccepted.Add(1)
 	defer e.pendingAccepted.Done()
 	acceptedChan := e.acceptedChan
 	e.mu.Unlock()
-	if state == StateListen {
+	if e.EndpointState() == StateListen {
 		acceptedChan <- n
 		e.waiterQueue.Notify(waiter.EventIn)
 	} else {
@@ -547,7 +546,7 @@ func (e *endpoint) handleListenSegment(ctx *listenContext, s *segment) {
 
 		// Switch state to connected.
 		n.stack.Stats().TCP.CurrentEstablished.Increment()
-		n.state = StateEstablished
+		n.setEndpointState(StateEstablished)
 		n.isConnectNotified = true
 
 		// Do the delivery in a separate goroutine so
@@ -581,7 +580,7 @@ func (e *endpoint) protocolListenLoop(rcvWnd seqnum.Size) *tcpip.Error {
 		// handleSynSegment() from attempting to queue new connections
 		// to the endpoint.
 		e.mu.Lock()
-		e.state = StateClose
+		e.setEndpointState(StateClose)
 
 		// close any endpoints in SYN-RCVD state.
 		ctx.closeAllPendingEndpoints()
