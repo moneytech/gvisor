@@ -30,6 +30,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/hash/jenkins"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/iptables"
+	"gvisor.dev/gvisor/pkg/tcpip/ports"
 	"gvisor.dev/gvisor/pkg/tcpip/seqnum"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tmutex"
@@ -340,9 +341,11 @@ type endpoint struct {
 	// TCP should never broadcast but Linux nevertheless supports enabling/
 	// disabling SO_BROADCAST, albeit as a NOOP.
 	broadcast bool
+
 	// Values used to reserve a port or register a transport endpoint
 	// (which ever happens first).
 	boundBindToDevice tcpip.NICID
+	boundPortFlags    ports.Flags
 
 	// effectiveNetProtos contains the network protocols actually in use. In
 	// most cases it will only contain "netProto", but in cases like IPv6
@@ -471,6 +474,12 @@ type endpoint struct {
 	// keepalives every keepalive.interval. If we send keepalive.count
 	// without hearing a response, the connection is closed.
 	keepalive keepalive
+
+	// userTimeout if non-zero specifies a user specified timeout for
+	// a connection w/ pending data to send. A connection that has pending
+	// unacked data will be forcibily aborted if the timeout is reached
+	// without any data being acked.
+	userTimeout time.Duration
 
 	// pendingAccepted is a synchronization primitive used to track number
 	// of connections that are queued up to be delivered to the accepted
@@ -737,9 +746,10 @@ func (e *endpoint) Close() {
 			e.isRegistered = false
 		}
 
-		e.stack.ReleasePort(e.effectiveNetProtos, ProtocolNumber, e.ID.LocalAddress, e.ID.LocalPort, e.boundBindToDevice)
+		e.stack.ReleasePort(e.effectiveNetProtos, ProtocolNumber, e.ID.LocalAddress, e.ID.LocalPort, e.boundPortFlags, e.boundBindToDevice)
 		e.isPortReserved = false
 		e.boundBindToDevice = 0
+		e.boundPortFlags = ports.Flags{}
 	}
 
 	// Mark endpoint as closed.
@@ -800,10 +810,11 @@ func (e *endpoint) cleanupLocked() {
 	}
 
 	if e.isPortReserved {
-		e.stack.ReleasePort(e.effectiveNetProtos, ProtocolNumber, e.ID.LocalAddress, e.ID.LocalPort, e.boundBindToDevice)
+		e.stack.ReleasePort(e.effectiveNetProtos, ProtocolNumber, e.ID.LocalAddress, e.ID.LocalPort, e.boundPortFlags, e.boundBindToDevice)
 		e.isPortReserved = false
 	}
 	e.boundBindToDevice = 0
+	e.boundPortFlags = ports.Flags{}
 
 	e.route.Release()
 	e.stack.CompleteTransportEndpointCleanup(e)
@@ -1329,6 +1340,12 @@ func (e *endpoint) SetSockOpt(opt interface{}) *tcpip.Error {
 		e.notifyProtocolGoroutine(notifyKeepaliveChanged)
 		return nil
 
+	case tcpip.TCPUserTimeoutOption:
+		e.mu.Lock()
+		e.userTimeout = time.Duration(v)
+		e.mu.Unlock()
+		return nil
+
 	case tcpip.BroadcastOption:
 		e.mu.Lock()
 		e.broadcast = v != 0
@@ -1587,6 +1604,12 @@ func (e *endpoint) GetSockOpt(opt interface{}) *tcpip.Error {
 		e.keepalive.Unlock()
 		return nil
 
+	case *tcpip.TCPUserTimeoutOption:
+		e.mu.Lock()
+		*o = tcpip.TCPUserTimeoutOption(e.userTimeout)
+		e.mu.Unlock()
+		return nil
+
 	case *tcpip.OutOfBandInlineOption:
 		// We don't currently support disabling this option.
 		*o = 1
@@ -1775,7 +1798,7 @@ func (e *endpoint) connect(addr tcpip.FullAddress, handshake bool, run bool) *tc
 			}
 			// reusePort is false below because connect cannot reuse a port even if
 			// reusePort was set.
-			if !e.stack.IsPortAvailable(netProtos, ProtocolNumber, e.ID.LocalAddress, p, false /* reusePort */, e.bindToDevice) {
+			if !e.stack.IsPortAvailable(netProtos, ProtocolNumber, e.ID.LocalAddress, p, ports.Flags{LoadBalanced: false}, e.bindToDevice) {
 				return false, nil
 			}
 
@@ -1802,7 +1825,7 @@ func (e *endpoint) connect(addr tcpip.FullAddress, handshake bool, run bool) *tc
 	// before Connect: in such a case we don't want to hold on to
 	// reservations anymore.
 	if e.isPortReserved {
-		e.stack.ReleasePort(e.effectiveNetProtos, ProtocolNumber, origID.LocalAddress, origID.LocalPort, e.boundBindToDevice)
+		e.stack.ReleasePort(e.effectiveNetProtos, ProtocolNumber, origID.LocalAddress, origID.LocalPort, e.boundPortFlags, e.boundBindToDevice)
 		e.isPortReserved = false
 	}
 
@@ -2034,28 +2057,33 @@ func (e *endpoint) Bind(addr tcpip.FullAddress) (err *tcpip.Error) {
 		}
 	}
 
-	port, err := e.stack.ReservePort(netProtos, ProtocolNumber, addr.Addr, addr.Port, e.reusePort, e.bindToDevice)
+	flags := ports.Flags{
+		LoadBalanced: e.reusePort,
+	}
+	port, err := e.stack.ReservePort(netProtos, ProtocolNumber, addr.Addr, addr.Port, flags, e.bindToDevice)
 	if err != nil {
 		return err
 	}
 
 	e.boundBindToDevice = e.bindToDevice
+	e.boundPortFlags = flags
 	e.isPortReserved = true
 	e.effectiveNetProtos = netProtos
 	e.ID.LocalPort = port
 
 	// Any failures beyond this point must remove the port registration.
-	defer func(bindToDevice tcpip.NICID) {
+	defer func(portFlags ports.Flags, bindToDevice tcpip.NICID) {
 		if err != nil {
-			e.stack.ReleasePort(netProtos, ProtocolNumber, addr.Addr, port, bindToDevice)
+			e.stack.ReleasePort(netProtos, ProtocolNumber, addr.Addr, port, portFlags, bindToDevice)
 			e.isPortReserved = false
 			e.effectiveNetProtos = nil
 			e.ID.LocalPort = 0
 			e.ID.LocalAddress = ""
 			e.boundNICID = 0
 			e.boundBindToDevice = 0
+			e.boundPortFlags = ports.Flags{}
 		}
-	}(e.boundBindToDevice)
+	}(e.boundPortFlags, e.boundBindToDevice)
 
 	// If an address is specified, we must ensure that it's one of our
 	// local addresses.

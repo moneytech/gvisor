@@ -1853,6 +1853,22 @@ cc_binary(
 )
 
 cc_binary(
+    name = "rseq_test",
+    testonly = 1,
+    srcs = ["rseq.cc"],
+    data = ["//test/syscalls/linux/rseq"],
+    linkstatic = 1,
+    deps = [
+        "//test/syscalls/linux/rseq:lib",
+        "//test/util:logging",
+        "//test/util:multiprocess_util",
+        "//test/util:test_main",
+        "//test/util:test_util",
+        "@com_google_googletest//:gtest",
+    ],
+)
+
+cc_binary(
     name = "rtsignal_test",
     testonly = 1,
     srcs = ["rtsignal.cc"],
@@ -3256,8 +3272,6 @@ cc_binary(
     testonly = 1,
     srcs = ["tcp_socket.cc"],
     linkstatic = 1,
-    # FIXME(b/135470853)
-    tags = ["flaky"],
     deps = [
         ":socket_test_util",
         "//test/util:file_descriptor",
@@ -3702,6 +3716,27 @@ cc_binary(
     deps = [
         ":ip_socket_test_util",
         "//test/util:file_descriptor",
+        "//test/util:test_main",
+        "//test/util:test_util",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest",
+    ],
+)
+
+cc_binary(
+    name = "xattr_test",
+    testonly = 1,
+    srcs = [
+        "file_base.h",
+        "xattr.cc",
+    ],
+    linkstatic = 1,
+    deps = [
+        "//test/util:capability_util",
+        "//test/util:file_descriptor",
+        "//test/util:fs_util",
+        "//test/util:posix_error",
+        "//test/util:temp_path",
         "//test/util:test_main",
         "//test/util:test_util",
         "@com_google_absl//absl/strings",

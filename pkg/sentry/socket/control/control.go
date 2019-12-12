@@ -195,15 +195,15 @@ func putCmsg(buf []byte, flags int, msgType uint32, align uint, data []int32) ([
 	// the available space, we must align down.
 	//
 	// align must be >= 4 and each data int32 is 4 bytes. The length of the
-	// header is already aligned, so if we align to the with of the data there
+	// header is already aligned, so if we align to the width of the data there
 	// are two cases:
 	// 1. The aligned length is less than the length of the header. The
 	// unaligned length was also less than the length of the header, so we
 	// can't write anything.
 	// 2. The aligned length is greater than or equal to the length of the
-	// header. We can write the header plus zero or more datas. We can't write
-	// a partial int32, so the length of the message will be
-	// min(aligned length, header + datas).
+	// header. We can write the header plus zero or more bytes of data. We can't
+	// write a partial int32, so the length of the message will be
+	// min(aligned length, header + data).
 	if space < linux.SizeOfControlMessageHeader {
 		flags |= linux.MSG_CTRUNC
 		return buf, flags
@@ -240,12 +240,12 @@ func putCmsgStruct(buf []byte, msgLevel, msgType uint32, align uint, data interf
 
 	buf = binary.Marshal(buf, usermem.ByteOrder, data)
 
-	// Check if we went over.
+	// If the control message data brought us over capacity, omit it.
 	if cap(buf) != cap(ob) {
 		return hdrBuf
 	}
 
-	// Fix up length.
+	// Update control message length to include data.
 	putUint64(ob, uint64(len(buf)-len(ob)))
 
 	return alignSlice(buf, align)
@@ -348,41 +348,60 @@ func PackTClass(t *kernel.Task, tClass int32, buf []byte) []byte {
 	)
 }
 
-func addSpaceForCmsg(cmsgDataLen int, buf []byte) []byte {
-	newBuf := make([]byte, 0, len(buf)+linux.SizeOfControlMessageHeader+cmsgDataLen)
-	return append(newBuf, buf...)
-}
-
-// PackControlMessages converts the given ControlMessages struct into a buffer.
+// PackControlMessages packs control messages into the given buffer.
+//
 // We skip control messages specific to Unix domain sockets.
-func PackControlMessages(t *kernel.Task, cmsgs socket.ControlMessages) []byte {
-	var buf []byte
-	// The use of t.Arch().Width() is analogous to Linux's use of sizeof(long) in
-	// CMSG_ALIGN.
-	width := t.Arch().Width()
-
+//
+// Note that some control messages may be truncated if they do not fit under
+// the capacity of buf.
+func PackControlMessages(t *kernel.Task, cmsgs socket.ControlMessages, buf []byte) []byte {
 	if cmsgs.IP.HasTimestamp {
-		buf = addSpaceForCmsg(int(width), buf)
 		buf = PackTimestamp(t, cmsgs.IP.Timestamp, buf)
 	}
 
 	if cmsgs.IP.HasInq {
 		// In Linux, TCP_CM_INQ is added after SO_TIMESTAMP.
-		buf = addSpaceForCmsg(AlignUp(linux.SizeOfControlMessageInq, width), buf)
 		buf = PackInq(t, cmsgs.IP.Inq, buf)
 	}
 
 	if cmsgs.IP.HasTOS {
-		buf = addSpaceForCmsg(AlignUp(linux.SizeOfControlMessageTOS, width), buf)
 		buf = PackTOS(t, cmsgs.IP.TOS, buf)
 	}
 
 	if cmsgs.IP.HasTClass {
-		buf = addSpaceForCmsg(AlignUp(linux.SizeOfControlMessageTClass, width), buf)
 		buf = PackTClass(t, cmsgs.IP.TClass, buf)
 	}
 
 	return buf
+}
+
+// cmsgSpace is equivalent to CMSG_SPACE in Linux.
+func cmsgSpace(t *kernel.Task, dataLen int) int {
+	return linux.SizeOfControlMessageHeader + AlignUp(dataLen, t.Arch().Width())
+}
+
+// CmsgsSpace returns the number of bytes needed to fit the control messages
+// represented in cmsgs.
+func CmsgsSpace(t *kernel.Task, cmsgs socket.ControlMessages) int {
+	space := 0
+
+	if cmsgs.IP.HasTimestamp {
+		space += cmsgSpace(t, linux.SizeOfTimeval)
+	}
+
+	if cmsgs.IP.HasInq {
+		space += cmsgSpace(t, linux.SizeOfControlMessageInq)
+	}
+
+	if cmsgs.IP.HasTOS {
+		space += cmsgSpace(t, linux.SizeOfControlMessageTOS)
+	}
+
+	if cmsgs.IP.HasTClass {
+		space += cmsgSpace(t, linux.SizeOfControlMessageTClass)
+	}
+
+	return space
 }
 
 // Parse parses a raw socket control message into portable objects.

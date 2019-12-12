@@ -224,7 +224,7 @@ var ARM64 = &kernel.SyscallTable{
 		189: syscalls.ErrorWithEvent("msgsnd", syserror.ENOSYS, "", []string{"gvisor.dev/issue/135"}),          // TODO(b/29354921)
 		190: syscalls.Supported("semget", Semget),
 		191: syscalls.PartiallySupported("semctl", Semctl, "Options IPC_INFO, SEM_INFO, IPC_STAT, SEM_STAT, SEM_STAT_ANY, GETNCNT, GETZCNT not supported.", nil),
-		192: syscalls.ErrorWithEvent("semtimedop", syserror.ENOSYS, "", []string{"gvisor.dev/issue/137"}), // TODO(b/29354920)
+		192: syscalls.ErrorWithEvent("semtimedop", syserror.ENOSYS, "", []string{"gvisor.dev/issue/137"}),
 		193: syscalls.PartiallySupported("semop", Semop, "Option SEM_UNDO not supported.", nil),
 		194: syscalls.PartiallySupported("shmget", Shmget, "Option SHM_HUGETLB is not supported.", nil),
 		195: syscalls.PartiallySupported("shmctl", Shmctl, "Options SHM_LOCK, SHM_UNLOCK are not supported.", nil),
@@ -302,7 +302,26 @@ var ARM64 = &kernel.SyscallTable{
 		285: syscalls.ErrorWithEvent("copy_file_range", syserror.ENOSYS, "", nil),
 		286: syscalls.Supported("preadv2", Preadv2),
 		287: syscalls.PartiallySupported("pwritev2", Pwritev2, "Flag RWF_HIPRI is not supported.", nil),
+		288: syscalls.ErrorWithEvent("pkey_mprotect", syserror.ENOSYS, "", nil),
+		289: syscalls.ErrorWithEvent("pkey_alloc", syserror.ENOSYS, "", nil),
+		290: syscalls.ErrorWithEvent("pkey_free", syserror.ENOSYS, "", nil),
 		291: syscalls.Supported("statx", Statx),
+		292: syscalls.ErrorWithEvent("io_pgetevents", syserror.ENOSYS, "", nil),
+		293: syscalls.ErrorWithEvent("rseq", syserror.ENOSYS, "", nil),
+
+		// Linux skips ahead to syscall 424 to sync numbers between arches.
+		424: syscalls.ErrorWithEvent("pidfd_send_signal", syserror.ENOSYS, "", nil),
+		425: syscalls.ErrorWithEvent("io_uring_setup", syserror.ENOSYS, "", nil),
+		426: syscalls.ErrorWithEvent("io_uring_enter", syserror.ENOSYS, "", nil),
+		427: syscalls.ErrorWithEvent("io_uring_register", syserror.ENOSYS, "", nil),
+		428: syscalls.ErrorWithEvent("open_tree", syserror.ENOSYS, "", nil),
+		429: syscalls.ErrorWithEvent("move_mount", syserror.ENOSYS, "", nil),
+		430: syscalls.ErrorWithEvent("fsopen", syserror.ENOSYS, "", nil),
+		431: syscalls.ErrorWithEvent("fsconfig", syserror.ENOSYS, "", nil),
+		432: syscalls.ErrorWithEvent("fsmount", syserror.ENOSYS, "", nil),
+		433: syscalls.ErrorWithEvent("fspick", syserror.ENOSYS, "", nil),
+		434: syscalls.ErrorWithEvent("pidfd_open", syserror.ENOSYS, "", nil),
+		435: syscalls.ErrorWithEvent("clone3", syserror.ENOSYS, "", nil),
 	},
 	Emulate: map[usermem.Addr]uintptr{},
 

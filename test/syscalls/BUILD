@@ -376,6 +376,8 @@ syscall_test(
 
 syscall_test(test = "//test/syscalls/linux:rlimits_test")
 
+syscall_test(test = "//test/syscalls/linux:rseq_test")
+
 syscall_test(test = "//test/syscalls/linux:rtsignal_test")
 
 syscall_test(test = "//test/syscalls/linux:sched_test")
@@ -714,6 +716,11 @@ syscall_test(test = "//test/syscalls/linux:proc_net_unix_test")
 syscall_test(test = "//test/syscalls/linux:proc_net_tcp_test")
 
 syscall_test(test = "//test/syscalls/linux:proc_net_udp_test")
+
+syscall_test(
+    add_overlay = True,
+    test = "//test/syscalls/linux:xattr_test",
+)
 
 go_binary(
     name = "syscall_test_runner",
